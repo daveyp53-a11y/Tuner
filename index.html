@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tuner">
+<title>Note Tuner</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef1f4;--ink:#14202b;--mute:#5d6b78;--track:#dde3e9;--tick:#9aa7b3;--ok:#1f8a5b;--off:#c96f12;--zone:rgba(31,138,91,.18);color-scheme:light;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f161c;--ink:#e6edf2;--mute:#8d9ba8;--track:#1c2730;--tick:#4a5966;--ok:#4cc38a;--off:#f0a24b;--zone:rgba(76,195,138,.2);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f161c;--ink:#e6edf2;--mute:#8d9ba8;--track:#1c2730;--tick:#4a5966;--ok:#4cc38a;--off:#f0a24b;--zone:rgba(76,195,138,.2);color-scheme:dark}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:'Bricolage Grotesque',system-ui,-apple-system,sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:440px;padding:20px 24px 28px;display:flex;flex-direction:column;justify-content:space-between;box-sizing:border-box}
+h1{font-size:1rem;font-weight:400;color:var(--mute);margin:0;text-align:center}
+.read{text-align:center}
+#note{font-size:clamp(7rem,38vw,11rem);font-weight:700;line-height:1;letter-spacing:-.03em;color:var(--mute);transition:color .15s}
+#note sub{font-size:.3em;font-weight:400;letter-spacing:0;vertical-align:baseline;margin-left:.04em}
+#note.ok{color:var(--ok)} #note.off{color:var(--ink)}
+#status{font-size:1.25rem;min-height:1.6em;margin:.3em 0 0}
+#status.ok{color:var(--ok)} #status.err{color:var(--off);font-size:1rem}
+#hz{color:var(--mute);margin:.2em 0 0;font-variant-numeric:tabular-nums}
+.meter{position:relative;height:64px;background:var(--track);border-radius:10px;overflow:hidden;
+background-image:repeating-linear-gradient(90deg,var(--tick) 0 2px,transparent 2px 10%);}
+.zone{position:absolute;top:0;bottom:0;left:45%;width:10%;background:var(--zone)}
+.mid{position:absolute;top:0;bottom:0;left:50%;width:2px;margin-left:-1px;background:var(--ink);opacity:.5}
+#needle{position:absolute;top:6px;bottom:6px;left:50%;width:6px;margin-left:-3px;border-radius:3px;background:var(--mute);opacity:.35;transition:left .12s ease-out,opacity .15s,background .15s}
+#needle.live{opacity:1;background:var(--off)} #needle.live.ok{background:var(--ok)}
+.scale{display:flex;justify-content:space-between;color:var(--mute);font-size:.85rem;margin-top:6px;font-variant-numeric:tabular-nums}
+#cents{text-align:center;font-size:1.1rem;margin:.6em 0 0;min-height:1.4em;font-variant-numeric:tabular-nums}
+.controls{display:flex;flex-direction:column;gap:18px;align-items:center}
+button{font:inherit;cursor:pointer;border:0;border-radius:999px}
+#go{background:var(--ink);color:var(--bg);font-weight:700;font-size:1.1rem;padding:16px 44px;min-width:200px}
+button:focus-visible{outline:3px solid var(--ok);outline-offset:3px}
+.ref{display:flex;align-items:center;gap:14px;color:var(--mute)}
+.ref button{width:44px;height:44px;background:var(--track);color:var(--ink);font-size:1.4rem;line-height:1}
+.ref output{min-width:7.5em;text-align:center;color:var(--ink);font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Note Tuner</h1>
+  <section class="read" aria-live="off">
+    <div id="note">–</div>
+    <p id="status" aria-live="polite">Tap Start, then play a note</p>
+    <p id="hz">&nbsp;</p>
+  </section>
+  <section>
+    <div class="meter" role="img" aria-label="Tuning meter, centre is in tune">
+      <div class="zone"></div><div class="mid"></div><div id="needle"></div>
+    </div>
+    <div class="scale"><span>−50¢ flat</span><span>0</span><span>sharp +50¢</span></div>
+    <p id="cents">&nbsp;</p>
+  </section>
+  <section class="controls">
+    <button id="go" type="button">Start</button>
+    <div class="ref">
+      <button id="dn" type="button" aria-label="Lower reference pitch">−</button>
+      <output id="refv">A4 = 440 Hz</output>
+      <button id="up" type="button" aria-label="Raise reference pitch">+</button>
+    </div>
+  </section>
+</main>
+<script>
+const NOTES=['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+const $=id=>document.getElementById(id);
+const noteEl=$('note'),statusEl=$('status'),hzEl=$('hz'),centsEl=$('cents'),needle=$('needle'),go=$('go');
+let ref=440,ctx,analyser,stream,buf,running=false,hist=[],lastHit=0,lastT=0,lastMsg='';
+try{const s=parseInt(localStorage.getItem('tunerRef'));if(s>=415&&s<=466)ref=s}catch(e){}
+function showRef(){$('refv').textContent='A4 = '+ref+' Hz';try{localStorage.setItem('tunerRef',ref)}catch(e){}}
+$('dn').onclick=()=>{ref=Math.max(415,ref-1);showRef()};
+$('up').onclick=()=>{ref=Math.min(466,ref+1);showRef()};
+showRef();
+
+// YIN pitch detection: returns frequency in Hz, or 0 if no clear pitch
+function yin(x,sr){
+  const W=x.length>>1,maxT=Math.min(W-1,Math.floor(sr/55)),minT=Math.max(2,Math.floor(sr/2100));
+  const d=new Float32Array(maxT+2);
+  for(let t=1;t<=maxT;t++){let s=0;for(let i=0;i<W;i++){const e=x[i]-x[i+t];s+=e*e}d[t]=s}
+  let run=0;
+  for(let t=1;t<=maxT;t++){run+=d[t];d[t]=run?d[t]*t/run:1}
+  let tau=-1;
+  for(let t=minT;t<maxT;t++){
+    if(d[t]<0.12){while(t+1<maxT&&d[t+1]<d[t])t++;tau=t;break}
+  }
+  if(tau<0)return 0;
+  const a=d[tau-1],b=d[tau],c=d[tau+1],den=2*(a-2*b+c);
+  if(den)tau+=(a-c)/den;
+  return sr/tau;
+}
+function median(a){const s=[...a].sort((p,q)=>p-q);return s[s.length>>1]}
+function setStatus(txt,cls){if(txt+cls===lastMsg)return;lastMsg=txt+cls;statusEl.textContent=txt;statusEl.className=cls||''}
+function idle(msg){
+  noteEl.innerHTML='–';noteEl.className='';hzEl.innerHTML='&nbsp;';centsEl.innerHTML='&nbsp;';
+  needle.className='';needle.style.left='50%';setStatus(msg||'Listening…','');
+}
+function render(f){
+  const midi=69+12*Math.log2(f/ref),n=Math.round(midi),c=(midi-n)*100;
+  const name=NOTES[((n%12)+12)%12],oct=Math.floor(n/12)-1,ok=Math.abs(c)<=5;
+  noteEl.innerHTML=name+'<sub>'+oct+'</sub>';noteEl.className=ok?'ok':'off';
+  hzEl.textContent=f.toFixed(1)+' Hz';
+  const r=Math.round(c);centsEl.textContent=(r>0?'+':r<0?'−':'')+Math.abs(r)+' cents';
+  needle.className='live'+(ok?' ok':'');needle.style.left=(50+Math.max(-50,Math.min(50,c)))+'%';
+  setStatus(ok?'In tune':c<0?'Flat: tune up':'Sharp: tune down',ok?'ok':'');
+}
+function loop(t){
+  if(!running)return;requestAnimationFrame(loop);
+  if(t-lastT<45)return;lastT=t;
+  analyser.getFloatTimeDomainData(buf);
+  let rms=0;for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];
+  rms=Math.sqrt(rms/buf.length);
+  const f=rms>0.01?yin(buf,ctx.sampleRate):0;
+  if(f){
+    const m=69+12*Math.log2(f/ref);
+    if(hist.length&&Math.abs(m-median(hist))>1)hist=[];
+    hist.push(m);if(hist.length>5)hist.shift();
+    render(ref*Math.pow(2,(median(hist)-69)/12));lastHit=t;
+  }else if(t-lastHit>600){hist=[];idle()}
+}
+async function start(){
+  try{
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw{name:'Insecure'};
+    const AC=window.AudioContext||window.webkitAudioContext;ctx=new AC();
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    await ctx.resume();
+    const src=ctx.createMediaStreamSource(stream);
+    analyser=ctx.createAnalyser();analyser.fftSize=4096;src.connect(analyser);
+    buf=new Float32Array(analyser.fftSize);
+    running=true;hist=[];lastHit=performance.now();go.textContent='Stop';idle();requestAnimationFrame(loop);
+  }catch(e){
+    stop();
+    const m=e.name==='NotAllowedError'?'Microphone blocked. Allow microphone access for this page in Safari’s settings, then reload.'
+      :e.name==='Insecure'?'This page needs a secure (https) link to use the microphone.'
+      :'Couldn’t start the microphone. Check that no other app is using it.';
+    idle(m);statusEl.className='err';
+  }
+}
+function stop(){
+  running=false;
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  if(ctx&&ctx.state!=='closed')ctx.close();
+  stream=ctx=null;go.textContent='Start';
+}
+go.onclick=()=>{if(running){stop();idle('Tap Start, then play a note')}else start()};
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&running){stop();idle('Stopped. Tap Start to listen again')}});
+</script>
+</body>
+</html>
